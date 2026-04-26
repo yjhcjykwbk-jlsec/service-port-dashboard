@@ -1,0 +1,4 @@
+dashboard.log
+*.bak.*
+.DS_Store
+.codex

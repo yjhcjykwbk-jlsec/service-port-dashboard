@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Service Port Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">PORT OPS</p>
+          <h1>服务端口控制台</h1>
+        </div>
+        <div class="actions">
+          <div class="search-wrap">
+            <span aria-hidden="true">⌕</span>
+            <input id="search" type="search" placeholder="搜索端口、服务、容器、PID" />
+          </div>
+          <button id="refresh" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section class="summary" aria-label="服务摘要">
+        <div class="metric">
+          <span id="portCount">--</span>
+          <small>监听端口</small>
+        </div>
+        <div class="metric">
+          <span id="groupCount">--</span>
+          <small>服务群</small>
+        </div>
+        <div class="metric">
+          <span id="containerCount">--</span>
+          <small>Docker 容器</small>
+        </div>
+        <div class="metric wide">
+          <span id="updatedAt">--</span>
+          <small>最近扫描</small>
+        </div>
+      </section>
+
+      <div class="tabs" role="tablist" aria-label="面板切换">
+        <button id="servicesTab" class="tab active" type="button">端口服务</button>
+        <button id="modelsTab" class="tab" type="button">模型切换</button>
+        <button id="processesTab" class="tab" type="button">长跑进程</button>
+      </div>
+
+      <nav id="groupNav" class="group-nav" aria-label="服务群筛选"></nav>
+
+      <section id="content" class="content" aria-live="polite"></section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
