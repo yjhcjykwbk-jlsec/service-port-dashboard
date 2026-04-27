@@ -421,6 +421,7 @@ function normalizeProvider(providerID, provider) {
     baseUrl: provider.baseUrl || provider.baseURL || provider.options?.baseURL || "",
     api: provider.api || "openai-compatible",
     key: redactKey(provider.apiKey || provider.key || ""),
+    source: provider.source || "openclaw",
     models: (provider.models || []).map((model) => ({
       id: model.id || model,
       name: model.name || model.id || model,
@@ -453,8 +454,7 @@ async function getModelData() {
     providerMap.set(id, normalizeProvider(id, provider));
   }
   for (const [id, auth] of Object.entries(opencodeAuth || {})) {
-    if (!providerMap.has(id)) providerMap.set(id, normalizeProvider(id, { key: auth.key, models: [] }));
-    else providerMap.get(id).key = redactKey(auth.key || "");
+    if (!providerMap.has(id)) providerMap.set(id, normalizeProvider(id, { key: auth.key, models: [], source: "opencode-auth-only" }));
   }
 
   const openclawAgents = [
@@ -513,15 +513,28 @@ function splitModel(model) {
   return { providerID: model.slice(0, index), modelID: model.slice(index + 1) };
 }
 
+async function syncOpenCodeAuth(providerID, provider, backups) {
+  const key = provider?.apiKey || provider?.key || "";
+  if (!key) return;
+  const auth = await readJson(OPENCODE_AUTH).catch(() => ({}));
+  if (auth[providerID]?.key === key && auth[providerID]?.type === "api") return;
+  backups.push(await backup(OPENCODE_AUTH));
+  auth[providerID] = { ...(auth[providerID] || {}), type: "api", key };
+  await writeJson(OPENCODE_AUTH, auth);
+}
+
 async function switchModel(target, model) {
   const { providerID, modelID } = splitModel(model);
   const backups = [];
+  const openclaw = await readJson(OPENCLAW_CONFIG).catch(() => ({}));
+  const provider = openclaw.models?.providers?.[providerID];
 
   if (target === "opencode") {
     const config = await readJson(OPENCODE_CONFIG).catch(() => ({}));
     backups.push(await backup(OPENCODE_CONFIG));
     config.model = model;
     await writeJson(OPENCODE_CONFIG, config);
+    await syncOpenCodeAuth(providerID, provider, backups);
     return { changed: "opencode", applied: "config-written; restart running opencode sessions manually", backups };
   }
 
@@ -534,14 +547,13 @@ async function switchModel(target, model) {
     state.variant ||= {};
     state.variant[model] = "default";
     await writeJson(OPENCODE_MODEL_STATE, state);
+    await syncOpenCodeAuth(providerID, provider, backups);
     await restartOpenCodeWeb();
     return { changed: "opencode-web", applied: "model-state-written; opencode web restarted on 5175", backups };
   }
 
   if (target === "claude") {
     const claude = await readJson(CLAUDE_CONFIG);
-    const openclaw = await readJson(OPENCLAW_CONFIG);
-    const provider = openclaw.models?.providers?.[providerID];
     if (!provider) throw new Error(`unknown provider ${providerID}`);
     if (!CLAUDE_ANTHROPIC_BASE_BY_PROVIDER[providerID]) {
       throw new Error(`${providerID} is not registered as Anthropic-compatible for Claude Code`);
@@ -557,7 +569,6 @@ async function switchModel(target, model) {
 
   if (target.startsWith("openclaw:")) {
     const agentID = target.split(":")[1];
-    const openclaw = await readJson(OPENCLAW_CONFIG);
     backups.push(await backup(OPENCLAW_CONFIG));
     if (agentID === "defaults") {
       openclaw.agents ||= {};

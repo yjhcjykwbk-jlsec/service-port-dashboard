@@ -330,6 +330,7 @@ function renderModels() {
   state.models.providers.forEach((provider) => {
     const row = el("article", "provider");
     row.append(el("strong", "", provider.id));
+    row.append(el("div", "provider-meta", `source: ${provider.source || "openclaw"}`));
     row.append(el("div", "provider-meta", `base: ${provider.baseUrl || "未登记"}`));
     row.append(el("div", "provider-meta", `models: ${provider.models.map((model) => model.id).join(", ") || "未登记"}`));
     row.append(secretFact("apikey", provider.key.configured ? provider.key.value : "未配置"));
