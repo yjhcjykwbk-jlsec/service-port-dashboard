@@ -440,6 +440,38 @@ function providerModels(provider) {
   }));
 }
 
+function providerBase(provider = {}) {
+  return provider.baseUrl || provider.baseURL || provider.options?.baseURL || "";
+}
+
+function baseFamily(value = "") {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    return `${url.hostname.toLowerCase()}/${parts.slice(0, 3).join("/")}`.replace(/\/$/, "");
+  } catch {
+    return value.toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
+  }
+}
+
+function hasSameBaseFamily(left, right) {
+  const a = baseFamily(left);
+  const b = baseFamily(right);
+  return Boolean(a && b && (a.startsWith(b) || b.startsWith(a)));
+}
+
+function isOpenClawAlias(providerID, openclawProviders, opencodeProviders = {}) {
+  const authBase = providerBase(opencodeProviders[providerID]);
+  for (const [openclawID, provider] of Object.entries(openclawProviders || {})) {
+    if (providerID.startsWith(`${openclawID}-`) || providerID.startsWith(`${openclawID}_`) || providerID.startsWith(`${openclawID}.`)) {
+      return true;
+    }
+    if (hasSameBaseFamily(authBase, providerBase(provider))) return true;
+  }
+  return false;
+}
+
 async function getModelData() {
   const [openclaw, opencode, opencodeAuth, opencodeState, claude] = await Promise.all([
     readJson(OPENCLAW_CONFIG),
@@ -454,7 +486,9 @@ async function getModelData() {
     providerMap.set(id, normalizeProvider(id, provider));
   }
   for (const [id, auth] of Object.entries(opencodeAuth || {})) {
-    if (!providerMap.has(id)) providerMap.set(id, normalizeProvider(id, { key: auth.key, models: [], source: "opencode-auth-only" }));
+    if (!providerMap.has(id) && !isOpenClawAlias(id, openclaw.models?.providers, opencode.provider)) {
+      providerMap.set(id, normalizeProvider(id, { key: auth.key, models: [], source: "opencode-auth-only" }));
+    }
   }
 
   const openclawAgents = [
