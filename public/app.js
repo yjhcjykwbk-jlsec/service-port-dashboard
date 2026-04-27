@@ -98,8 +98,9 @@ function fact(label, value, options = {}) {
 
 function frontendUrl(record) {
   if (!record.status?.frontend) return "";
+  const scheme = record.status.scheme || "http";
   const host = window.location.hostname || "127.0.0.1";
-  return `http://${host}:${record.port}/`;
+  return `${scheme}://${host}:${record.port}/`;
 }
 
 function secretFact(label, value) {

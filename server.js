@@ -34,6 +34,8 @@ const PORT_HINTS = {
   1200: { service: "ragflow-es-01", group: "RAGFlow / Search", kind: "docker" },
   2026: { service: "deer-flow-nginx", group: "Deer Flow", kind: "docker" },
   3000: { service: "Claude Code Rev Web", group: "OpenClaw / Agents", kind: "process" },
+  3001: { service: "Next.js web service", group: "OpenClaw / Agents", kind: "process", purpose: "Next.js 前端服务，通常可直接浏览。" },
+  3002: { service: "Next.js web service", group: "OpenClaw / Agents", kind: "process", purpose: "Next.js 前端服务，通常可直接浏览。" },
   3301: { service: "multica-frontend-1", group: "Multica", kind: "docker" },
   3727: { service: "claude-code-history", group: "OpenClaw / Agents", kind: "process" },
   4310: { service: "local bun service", group: "OpenClaw / Agents", kind: "process" },
@@ -62,7 +64,7 @@ const SERVICE_PURPOSES = {
   "multica-backend-1": "Multica 后端 API 服务，根路径可能返回 404，但接口可用。"
 };
 
-const FRONTEND_PORTS = new Set([1111, 2026, 3000, 3301, 3727, 4310, 5175, 7777, 8080, 9000, 9999, 18081]);
+const NON_HTTP_PORTS = new Set([22, 53, 546, 631, 7890, 5432, 15432, 27017, 3350, 3389, 56825, 60342]);
 
 function run(command, args = [], timeout = 3500) {
   return new Promise((resolve) => {
@@ -221,14 +223,19 @@ function inferService(record) {
   return `port-${record.port}`;
 }
 
-async function probeHttp(port) {
-  if (!FRONTEND_PORTS.has(port)) {
+async function probeHttp(port, protocol = "tcp") {
+  if (protocol !== "tcp" || NON_HTTP_PORTS.has(port)) {
     return { state: "not-probed", label: "非网页端口", frontend: false };
   }
-  const result = await run("curl", ["-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", `http://127.0.0.1:${port}/`], 2800);
-  const code = Number(result.stdout.trim());
-  if (code >= 200 && code < 500) return { state: code < 400 ? "ok" : "warn", label: `HTTP ${code}`, frontend: true };
-  return { state: "down", label: "网页不可达", frontend: false };
+  for (const scheme of ["http", "https"]) {
+    const args = ["-k", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", `${scheme}://127.0.0.1:${port}/`];
+    const result = await run("curl", args, 2800);
+    const code = Number(result.stdout.trim());
+    if (code >= 200 && code < 500) {
+      return { state: code < 400 ? "ok" : "warn", label: `${scheme.toUpperCase()} ${code}`, frontend: true, scheme };
+    }
+  }
+  return { state: "down", label: "网页不可达", frontend: false, scheme: "" };
 }
 
 function explain(record) {
@@ -285,7 +292,7 @@ async function collectData() {
       dockerMapping: dockerHit?.mapping || null,
       service: "",
       group: "",
-      status: await probeHttp(listen.port),
+      status: await probeHttp(listen.port, listen.protocol),
       raw: listen.raw
     };
     record.service = inferService(record);
