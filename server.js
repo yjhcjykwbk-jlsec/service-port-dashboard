@@ -14,6 +14,10 @@ const OPENCODE_MODEL_STATE = "/home/xzg/.local/state/opencode/model.json";
 const CLAUDE_CONFIG = "/home/xzg/.claude/settings.json";
 const DASHBOARD_DIR = "/home/xzg/projects/service-port-dashboard";
 const OPENCODE_WEB_LOG = "/home/xzg/.openclaw/workspace/opencode-web-5175.log";
+const CLAUDE_ANTHROPIC_BASE_BY_PROVIDER = {
+  deepseek: "https://api.deepseek.com/anthropic",
+  zai: "https://api.z.ai/api/anthropic"
+};
 
 const GROUP_RULES = [
   { id: "openclaw", name: "OpenClaw / Agents", match: /openclaw|opencode|claude-code|claude/i },
@@ -485,9 +489,11 @@ async function getModelData() {
         id: "claude",
         name: "Claude Code",
         currentModel: claude.env?.ANTHROPIC_MODEL || "",
-        allowedModels: providerModels(openclaw.models?.providers?.zai || {}).map((model) => `zai/${model.id}`),
+        allowedModels: Object.keys(CLAUDE_ANTHROPIC_BASE_BY_PROVIDER).flatMap((providerID) =>
+          providerModels(openclaw.models?.providers?.[providerID] || {}).map((model) => `${providerID}/${model.id}`)
+        ),
         switchable: true,
-        note: "真实方式：写 ~/.claude/settings.json 的 env.ANTHROPIC_BASE_URL/API_KEY/MODEL。Claude Code 只接受 Anthropic 兼容接口；当前只放开 Z.AI。已运行 claude 进程要重启。"
+        note: "真实方式：写 ~/.claude/settings.json 的 env.ANTHROPIC_BASE_URL/API_KEY/MODEL。Claude Code 只接受 Anthropic-compatible 接口；当前放开 DeepSeek 与 Z.AI。已运行 claude 进程要重启。"
       },
       ...openclawAgents.map((agent) => ({
         id: `openclaw:${agent.id}`,
@@ -537,16 +543,13 @@ async function switchModel(target, model) {
     const openclaw = await readJson(OPENCLAW_CONFIG);
     const provider = openclaw.models?.providers?.[providerID];
     if (!provider) throw new Error(`unknown provider ${providerID}`);
-    const claudeBaseByProvider = {
-      zai: "https://api.z.ai/api/anthropic"
-    };
-    if (!claudeBaseByProvider[providerID]) {
+    if (!CLAUDE_ANTHROPIC_BASE_BY_PROVIDER[providerID]) {
       throw new Error(`${providerID} is not registered as Anthropic-compatible for Claude Code`);
     }
     backups.push(await backup(CLAUDE_CONFIG));
     claude.env ||= {};
     claude.env.ANTHROPIC_MODEL = modelID.toLowerCase();
-    claude.env.ANTHROPIC_BASE_URL = claudeBaseByProvider[providerID];
+    claude.env.ANTHROPIC_BASE_URL = CLAUDE_ANTHROPIC_BASE_BY_PROVIDER[providerID];
     if (provider.apiKey) claude.env.ANTHROPIC_API_KEY = provider.apiKey;
     await writeJson(CLAUDE_CONFIG, claude);
     return { changed: "claude", applied: "settings-written; restart Claude Code processes to take effect", backups };
