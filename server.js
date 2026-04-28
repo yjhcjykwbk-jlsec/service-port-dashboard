@@ -444,6 +444,11 @@ function providerBase(provider = {}) {
   return provider.baseUrl || provider.baseURL || provider.options?.baseURL || "";
 }
 
+function openCodeBaseUrl(provider = {}) {
+  const base = providerBase(provider);
+  return base.replace(/\/chat\/completions\/?$/, "");
+}
+
 function baseFamily(value = "") {
   if (!value) return "";
   try {
@@ -557,6 +562,26 @@ async function syncOpenCodeAuth(providerID, provider, backups) {
   await writeJson(OPENCODE_AUTH, auth);
 }
 
+async function syncOpenCodeProviderConfig(config, providerID, provider) {
+  if (!provider) throw new Error(`unknown provider ${providerID}`);
+  const models = providerModels(provider);
+  if (!models.length) throw new Error(`provider ${providerID} has no registered models`);
+  config.provider ||= {};
+  config.provider[providerID] = {
+    ...(config.provider[providerID] || {}),
+    npm: "@ai-sdk/openai-compatible",
+    name: provider.name || providerID,
+    options: {
+      ...(config.provider[providerID]?.options || {}),
+      baseURL: openCodeBaseUrl(provider)
+    },
+    models: Object.fromEntries(models.map((model) => [model.id, {
+      name: model.name,
+      ...(model.contextWindow ? { contextWindow: model.contextWindow } : {})
+    }]))
+  };
+}
+
 async function switchModel(target, model) {
   const { providerID, modelID } = splitModel(model);
   const backups = [];
@@ -567,9 +592,10 @@ async function switchModel(target, model) {
     const config = await readJson(OPENCODE_CONFIG).catch(() => ({}));
     backups.push(await backup(OPENCODE_CONFIG));
     config.model = model;
+    await syncOpenCodeProviderConfig(config, providerID, provider);
     await writeJson(OPENCODE_CONFIG, config);
     await syncOpenCodeAuth(providerID, provider, backups);
-    return { changed: "opencode", applied: "config-written; restart running opencode sessions manually", backups };
+    return { changed: "opencode", applied: "config/provider/auth written; restart running opencode sessions manually", backups };
   }
 
   if (target === "opencode-web") {
@@ -580,10 +606,14 @@ async function switchModel(target, model) {
     state.favorite = [item, ...(state.favorite || []).filter((entry) => `${entry.providerID}/${entry.modelID}` !== model)];
     state.variant ||= {};
     state.variant[model] = "default";
-    await writeJson(OPENCODE_MODEL_STATE, state);
+    const config = await readJson(OPENCODE_CONFIG).catch(() => ({}));
+    backups.push(await backup(OPENCODE_CONFIG));
+    await syncOpenCodeProviderConfig(config, providerID, provider);
     await syncOpenCodeAuth(providerID, provider, backups);
+    await writeJson(OPENCODE_CONFIG, config);
+    await writeJson(OPENCODE_MODEL_STATE, state);
     await restartOpenCodeWeb();
-    return { changed: "opencode-web", applied: "model-state-written; opencode web restarted on 5175", backups };
+    return { changed: "opencode-web", applied: "model-state/config/provider/auth written; opencode web restarted on 5175", backups };
   }
 
   if (target === "claude") {
