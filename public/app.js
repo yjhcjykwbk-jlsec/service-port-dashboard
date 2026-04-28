@@ -326,6 +326,10 @@ function renderModels() {
 
   const providers = el("section", "panel");
   providers.append(el("h2", "", "供应商登记"));
+  if (state.models.warnings?.length) providers.append(el("div", "message", state.models.warnings.join("；")));
+  if (state.models.configPaths) {
+    providers.append(el("div", "provider-meta", `配置路径：OpenClaw ${state.models.configPaths.openclaw} · OpenCode ${state.models.configPaths.opencode} · Claude ${state.models.configPaths.claude}`));
+  }
   const providerList = el("div", "provider-list");
   state.models.providers.forEach((provider) => {
     const row = el("article", "provider");
@@ -413,10 +417,15 @@ async function load() {
 }
 
 async function loadModels(shouldRender = true) {
-  const response = await fetch("/api/models", { cache: "no-store" });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  state.models = await response.json();
-  if (shouldRender) render();
+  try {
+    const response = await fetch("/api/models", { cache: "no-store" });
+    const text = await response.text();
+    if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
+    state.models = JSON.parse(text);
+    if (shouldRender) render();
+  } catch (error) {
+    content.replaceChildren(el("div", "empty", `加载模型配置失败：${error.message}`));
+  }
 }
 
 search.addEventListener("input", () => {

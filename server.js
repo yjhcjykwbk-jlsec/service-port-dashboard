@@ -1,19 +1,20 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import { copyFile, readFile, readlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const HOME = process.env.HOME || homedir();
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 4311);
-const OPENCLAW_CONFIG = "/home/xzg/.openclaw/openclaw.json";
-const OPENCODE_CONFIG = "/home/xzg/.config/opencode/opencode.jsonc";
-const OPENCODE_AUTH = "/home/xzg/.local/share/opencode/auth.json";
-const OPENCODE_MODEL_STATE = "/home/xzg/.local/state/opencode/model.json";
-const CLAUDE_CONFIG = "/home/xzg/.claude/settings.json";
-const DASHBOARD_DIR = "/home/xzg/projects/service-port-dashboard";
-const OPENCODE_WEB_LOG = "/home/xzg/.openclaw/workspace/opencode-web-5175.log";
+const OPENCLAW_CONFIG = path.join(HOME, ".openclaw/openclaw.json");
+const OPENCODE_CONFIG = path.join(HOME, ".config/opencode/opencode.jsonc");
+const OPENCODE_AUTH = path.join(HOME, ".local/share/opencode/auth.json");
+const OPENCODE_MODEL_STATE = path.join(HOME, ".local/state/opencode/model.json");
+const CLAUDE_CONFIG = path.join(HOME, ".claude/settings.json");
+const OPENCODE_WEB_LOG = path.join(HOME, ".openclaw/workspace/opencode-web-5175.log");
 const CLAUDE_ANTHROPIC_BASE_BY_PROVIDER = {
   deepseek: "https://api.deepseek.com/anthropic",
   zai: "https://api.z.ai/api/anthropic"
@@ -479,12 +480,14 @@ function isOpenClawAlias(providerID, openclawProviders, opencodeProviders = {}) 
 
 async function getModelData() {
   const [openclaw, opencode, opencodeAuth, opencodeState, claude] = await Promise.all([
-    readJson(OPENCLAW_CONFIG),
+    readJson(OPENCLAW_CONFIG).catch(() => ({})),
     readJson(OPENCODE_CONFIG).catch(() => ({})),
     readJson(OPENCODE_AUTH).catch(() => ({})),
     readJson(OPENCODE_MODEL_STATE).catch(() => ({})),
     readJson(CLAUDE_CONFIG).catch(() => ({}))
   ]);
+  const warnings = [];
+  if (!openclaw.models?.providers) warnings.push(`未读取到 OpenClaw 模型配置：${OPENCLAW_CONFIG}`);
 
   const providerMap = new Map();
   for (const [id, provider] of Object.entries(openclaw.models?.providers || {})) {
@@ -506,6 +509,14 @@ async function getModelData() {
   ];
 
   return {
+    configPaths: {
+      openclaw: OPENCLAW_CONFIG,
+      opencode: OPENCODE_CONFIG,
+      opencodeAuth: OPENCODE_AUTH,
+      opencodeState: OPENCODE_MODEL_STATE,
+      claude: CLAUDE_CONFIG
+    },
+    warnings,
     providers: [...providerMap.values()],
     targets: [
       {
@@ -658,7 +669,7 @@ async function restartOpenCodeWeb() {
   await new Promise((resolve) => setTimeout(resolve, 800));
   execFile("bash", [
     "-lc",
-    `cd /home/xzg && setsid /home/xzg/.nvm/versions/node/v22.17.0/bin/opencode web --port 5175 --hostname 0.0.0.0 > ${OPENCODE_WEB_LOG} 2>&1 < /dev/null &`
+    `cd ${JSON.stringify(HOME)} && OPENCODE_BIN="$(command -v opencode)" && if [ -n "$OPENCODE_BIN" ]; then setsid "$OPENCODE_BIN" web --port 5175 --hostname 0.0.0.0 > ${JSON.stringify(OPENCODE_WEB_LOG)} 2>&1 < /dev/null & fi`
   ], () => {});
 }
 
