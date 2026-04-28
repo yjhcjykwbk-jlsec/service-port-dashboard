@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { copyFile, readFile, readlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,11 +15,6 @@ const OPENCODE_AUTH = path.join(HOME, ".local/share/opencode/auth.json");
 const OPENCODE_MODEL_STATE = path.join(HOME, ".local/state/opencode/model.json");
 const CLAUDE_CONFIG = path.join(HOME, ".claude/settings.json");
 const OPENCODE_WEB_LOG = path.join(HOME, ".openclaw/workspace/opencode-web-5175.log");
-const CLAUDE_ANTHROPIC_BASE_BY_PROVIDER = {
-  deepseek: "https://api.deepseek.com/anthropic",
-  zai: "https://api.z.ai/api/anthropic"
-};
-
 const GROUP_RULES = [
   { id: "openclaw", name: "OpenClaw / Agents", match: /openclaw|opencode|claude-code|claude/i },
   { id: "multica", name: "Multica", match: /multica/i },
@@ -406,14 +401,25 @@ async function readJson(file) {
 }
 
 async function writeJson(file, value) {
+  await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 async function backup(file) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const target = `${file}.bak.${stamp}`;
-  await copyFile(file, target);
+  try {
+    await copyFile(file, target);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
   return target;
+}
+
+async function addBackup(backups, file) {
+  const target = await backup(file);
+  if (target) backups.push(target);
 }
 
 function normalizeProvider(providerID, provider) {
@@ -448,6 +454,13 @@ function providerBase(provider = {}) {
 function openCodeBaseUrl(provider = {}) {
   const base = providerBase(provider);
   return base.replace(/\/chat\/completions\/?$/, "");
+}
+
+function claudeAnthropicBase(providerID, provider = {}) {
+  const base = providerBase(provider);
+  if (/deepseek/i.test(providerID) || /api\.deepseek\.com/i.test(base)) return "https://api.deepseek.com/anthropic";
+  if (/^zai\b|z\.ai/i.test(providerID) || /api\.z\.ai/i.test(base)) return "https://api.z.ai/api/anthropic";
+  return "";
 }
 
 function baseFamily(value = "") {
@@ -539,11 +552,11 @@ async function getModelData() {
         id: "claude",
         name: "Claude Code",
         currentModel: claude.env?.ANTHROPIC_MODEL || "",
-        allowedModels: Object.keys(CLAUDE_ANTHROPIC_BASE_BY_PROVIDER).flatMap((providerID) =>
-          providerModels(openclaw.models?.providers?.[providerID] || {}).map((model) => `${providerID}/${model.id}`)
+        allowedModels: Object.entries(openclaw.models?.providers || {}).flatMap(([providerID, provider]) =>
+          claudeAnthropicBase(providerID, provider) ? providerModels(provider).map((model) => `${providerID}/${model.id}`) : []
         ),
         switchable: true,
-        note: "真实方式：写 ~/.claude/settings.json 的 env.ANTHROPIC_BASE_URL/API_KEY/MODEL。Claude Code 只接受 Anthropic-compatible 接口；当前放开 DeepSeek 与 Z.AI。已运行 claude 进程要重启。"
+        note: "真实方式：写 ~/.claude/settings.json 的 env.ANTHROPIC_BASE_URL/API_KEY/MODEL。Claude Code 只接受 Anthropic-compatible 接口；会按 OpenClaw provider baseURL 推导 DeepSeek/Z.AI 兼容地址。已运行 claude 进程要重启。"
       },
       ...openclawAgents.map((agent) => ({
         id: `openclaw:${agent.id}`,
@@ -568,7 +581,7 @@ async function syncOpenCodeAuth(providerID, provider, backups) {
   if (!key) return;
   const auth = await readJson(OPENCODE_AUTH).catch(() => ({}));
   if (auth[providerID]?.key === key && auth[providerID]?.type === "api") return;
-  backups.push(await backup(OPENCODE_AUTH));
+  await addBackup(backups, OPENCODE_AUTH);
   auth[providerID] = { ...(auth[providerID] || {}), type: "api", key };
   await writeJson(OPENCODE_AUTH, auth);
 }
@@ -601,7 +614,7 @@ async function switchModel(target, model) {
 
   if (target === "opencode") {
     const config = await readJson(OPENCODE_CONFIG).catch(() => ({}));
-    backups.push(await backup(OPENCODE_CONFIG));
+    await addBackup(backups, OPENCODE_CONFIG);
     config.model = model;
     await syncOpenCodeProviderConfig(config, providerID, provider);
     await writeJson(OPENCODE_CONFIG, config);
@@ -611,14 +624,14 @@ async function switchModel(target, model) {
 
   if (target === "opencode-web") {
     const state = await readJson(OPENCODE_MODEL_STATE).catch(() => ({ recent: [], favorite: [], variant: {} }));
-    backups.push(await backup(OPENCODE_MODEL_STATE));
+    await addBackup(backups, OPENCODE_MODEL_STATE);
     const item = { providerID, modelID };
     state.recent = [item, ...(state.recent || []).filter((entry) => `${entry.providerID}/${entry.modelID}` !== model)].slice(0, 8);
     state.favorite = [item, ...(state.favorite || []).filter((entry) => `${entry.providerID}/${entry.modelID}` !== model)];
     state.variant ||= {};
     state.variant[model] = "default";
     const config = await readJson(OPENCODE_CONFIG).catch(() => ({}));
-    backups.push(await backup(OPENCODE_CONFIG));
+    await addBackup(backups, OPENCODE_CONFIG);
     await syncOpenCodeProviderConfig(config, providerID, provider);
     await syncOpenCodeAuth(providerID, provider, backups);
     await writeJson(OPENCODE_CONFIG, config);
@@ -628,15 +641,16 @@ async function switchModel(target, model) {
   }
 
   if (target === "claude") {
-    const claude = await readJson(CLAUDE_CONFIG);
+    const claude = await readJson(CLAUDE_CONFIG).catch(() => ({}));
     if (!provider) throw new Error(`unknown provider ${providerID}`);
-    if (!CLAUDE_ANTHROPIC_BASE_BY_PROVIDER[providerID]) {
+    const anthropicBase = claudeAnthropicBase(providerID, provider);
+    if (!anthropicBase) {
       throw new Error(`${providerID} is not registered as Anthropic-compatible for Claude Code`);
     }
-    backups.push(await backup(CLAUDE_CONFIG));
+    await addBackup(backups, CLAUDE_CONFIG);
     claude.env ||= {};
     claude.env.ANTHROPIC_MODEL = modelID.toLowerCase();
-    claude.env.ANTHROPIC_BASE_URL = CLAUDE_ANTHROPIC_BASE_BY_PROVIDER[providerID];
+    claude.env.ANTHROPIC_BASE_URL = anthropicBase;
     if (provider.apiKey) claude.env.ANTHROPIC_API_KEY = provider.apiKey;
     await writeJson(CLAUDE_CONFIG, claude);
     return { changed: "claude", applied: "settings-written; restart Claude Code processes to take effect", backups };
@@ -644,7 +658,7 @@ async function switchModel(target, model) {
 
   if (target.startsWith("openclaw:")) {
     const agentID = target.split(":")[1];
-    backups.push(await backup(OPENCLAW_CONFIG));
+    await addBackup(backups, OPENCLAW_CONFIG);
     if (agentID === "defaults") {
       openclaw.agents ||= {};
       openclaw.agents.defaults ||= {};
@@ -669,7 +683,7 @@ async function restartOpenCodeWeb() {
   await new Promise((resolve) => setTimeout(resolve, 800));
   execFile("bash", [
     "-lc",
-    `cd ${JSON.stringify(HOME)} && OPENCODE_BIN="$(command -v opencode)" && if [ -n "$OPENCODE_BIN" ]; then setsid "$OPENCODE_BIN" web --port 5175 --hostname 0.0.0.0 > ${JSON.stringify(OPENCODE_WEB_LOG)} 2>&1 < /dev/null & fi`
+    `cd ${JSON.stringify(HOME)} && mkdir -p ${JSON.stringify(path.dirname(OPENCODE_WEB_LOG))} && OPENCODE_BIN="$(command -v opencode)" && if [ -n "$OPENCODE_BIN" ]; then setsid "$OPENCODE_BIN" web --port 5175 --hostname 0.0.0.0 > ${JSON.stringify(OPENCODE_WEB_LOG)} 2>&1 < /dev/null & fi`
   ], () => {});
 }
 

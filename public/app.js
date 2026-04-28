@@ -378,7 +378,8 @@ function renderModels() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ target: target.id, model: select.value })
         });
-        const result = await response.json();
+        const text = await response.text();
+        const result = JSON.parse(text);
         if (!response.ok || !result.ok) throw new Error(result.message || `HTTP ${response.status}`);
         message.textContent = `${target.name} 已切换到 ${select.value}。动作：${result.applied || "已写入"}。备份：${(result.backups || []).join(", ")}`;
         await loadModels(false);
