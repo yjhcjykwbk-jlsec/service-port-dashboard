@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { copyFile, mkdir, readFile, readlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, readlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -204,6 +204,20 @@ async function dockerInspect(containers) {
   return inspected;
 }
 
+async function readNginxListenPorts() {
+  const dir = "/etc/nginx/sites-enabled";
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const ports = new Set();
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.isFile() && !entry.isSymbolicLink()) return;
+    const text = await readFile(path.join(dir, entry.name), "utf8").catch(() => "");
+    for (const match of text.matchAll(/^\s*listen\s+(?:\[[^\]]+\]:|[^:;\s]+:)?(\d+)\b/gm)) {
+      ports.add(`${Number(match[1])}/tcp`);
+    }
+  }));
+  return [...ports].sort((a, b) => Number(a) - Number(b));
+}
+
 function inferGroup(record) {
   const text = [
     record.service,
@@ -270,7 +284,10 @@ async function collectData() {
     [...new Set(listens.map((listen) => listen.process?.pid).filter(Boolean))]
       .map(async (pid) => [pid, await procDetails(pid)])
   ));
-  const inspectByContainer = await dockerInspect(containers);
+  const [inspectByContainer, nginxListenPorts] = await Promise.all([
+    dockerInspect(containers),
+    readNginxListenPorts()
+  ]);
   const containerByPort = new Map();
 
   for (const container of containers) {
@@ -315,7 +332,7 @@ async function collectData() {
     group.ports.sort((a, b) => a.port - b.port);
   }
 
-  const longRunning = await collectLongRunning(longProcesses, records, containers);
+  const longRunning = await collectLongRunning(longProcesses, records, containers, nginxListenPorts);
   const containerSummaries = containers.map((container) => {
     const info = inspectByContainer.get(container.id) || {};
     const portRecords = records.filter((record) => record.container?.id === container.id);
@@ -352,7 +369,7 @@ async function collectData() {
   };
 }
 
-async function collectLongRunning(processes, records, containers) {
+async function collectLongRunning(processes, records, containers, nginxListenPorts = []) {
   const listeningByPid = new Map();
   for (const record of records) {
     if (!record.process?.pid) continue;
@@ -372,12 +389,14 @@ async function collectLongRunning(processes, records, containers) {
   const byPid = new Map(candidates.map((process) => {
     const detail = detailByPid.get(process.pid) || {};
     const service = inferProcessService(process, detail, containerText);
+    const listeningPorts = listeningByPid.get(process.pid) || [];
+    const configPorts = isSystemNginxProcess(process) ? nginxListenPorts.filter((port) => !listeningPorts.includes(port)) : [];
     return [process.pid, {
       ...process,
       cwd: detail.cwd || "",
       cmdline: detail.cmdline || process.command,
       service,
-      listeningPorts: listeningByPid.get(process.pid) || [],
+      listeningPorts: [...listeningPorts, ...configPorts],
       children: []
     }];
   }));
@@ -397,8 +416,14 @@ async function collectLongRunning(processes, records, containers) {
   return roots;
 }
 
+function isSystemNginxProcess(process) {
+  return /nginx: master process \/usr\/sbin\/nginx\b/.test(process.command);
+}
+
 function inferProcessService(process, detail, containerText) {
   const text = `${process.command} ${detail.cwd || ""}`;
+  if (isSystemNginxProcess(process)) return "System nginx";
+  if (/nginx: master process nginx -g daemon off;/.test(process.command)) return "Docker nginx";
   if (/openclaw/i.test(text)) return "OpenClaw";
   if (/opencode/i.test(text)) return "OpenCode";
   if (/claude-code-history|clauderev|claude/i.test(text)) return "Claude tooling";
