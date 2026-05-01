@@ -13,6 +13,7 @@ const refresh = document.querySelector("#refresh");
 const servicesTab = document.querySelector("#servicesTab");
 const modelsTab = document.querySelector("#modelsTab");
 const processesTab = document.querySelector("#processesTab");
+const containersTab = document.querySelector("#containersTab");
 
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -231,6 +232,10 @@ function render() {
     renderProcesses();
     return;
   }
+  if (state.view === "containers") {
+    renderContainers();
+    return;
+  }
   if (!state.data) return;
   groupNav.hidden = false;
   renderSummary(state.data);
@@ -279,6 +284,30 @@ function renderProcessNode(process, depth = 0) {
   return node;
 }
 
+function renderContainerNode(container) {
+  const node = el("div", "process-node container-node");
+  node.style.setProperty("--depth", "0");
+  const line = el("div", "process-line");
+  line.append(el("span", "pid", "docker"));
+  line.append(el("span", "process-service", container.name));
+  line.append(el("span", "process-age", container.group || "Docker"));
+  if (container.ports?.length) {
+    line.append(el("span", "process-ports", container.ports.map((port) => `${port.hostPort}->${port.containerPort}/${port.protocol}`).join(", ")));
+  }
+  node.append(line);
+
+  const meta = el("div", "process-meta");
+  [
+    fact("镜像", container.image),
+    fact("Compose", container.dockerInfo?.composeProject ? `${container.dockerInfo.composeProject}/${container.dockerInfo.composeService || container.name}` : ""),
+    fact("容器目录", container.dockerInfo?.workingDir),
+    fact("容器命令", container.dockerInfo ? `${container.dockerInfo.entrypoint || ""} ${container.dockerInfo.cmd || ""}`.trim() : ""),
+    fact("端口用途", container.purpose)
+  ].filter(Boolean).forEach((item) => meta.append(item));
+  node.append(meta);
+  return node;
+}
+
 function flattenCount(nodes) {
   return nodes.reduce((sum, node) => sum + 1 + flattenCount(node.children || []), 0);
 }
@@ -288,13 +317,80 @@ function renderProcesses() {
   groupNav.hidden = true;
   renderSummary(state.data);
   const roots = state.data.longRunning || [];
+  const containers = state.data.containers || [];
   const panel = el("section", "panel");
   panel.append(el("h2", "", `运行超过 1 小时的进程树 (${flattenCount(roots)})`));
   const tree = el("div", "process-tree");
   if (!roots.length) tree.append(el("div", "empty", "没有运行超过 1 小时的非内核进程。"));
   roots.forEach((process) => tree.append(renderProcessNode(process)));
   panel.append(tree);
-  content.replaceChildren(panel);
+
+  const containerPanel = el("section", "panel");
+  containerPanel.append(el("h2", "", `Docker 容器与端口 (${containers.length})`));
+  const containerTree = el("div", "process-tree");
+  if (!containers.length) containerTree.append(el("div", "empty", "当前没有运行中的 Docker 容器。"));
+  containers.forEach((container) => containerTree.append(renderContainerNode(container)));
+  containerPanel.append(containerTree);
+
+  content.replaceChildren(panel, containerPanel);
+}
+
+function renderContainers() {
+  if (!state.data) return;
+  groupNav.hidden = true;
+  renderSummary(state.data);
+  const containers = state.data.containers || [];
+  if (!containers.length) {
+    content.replaceChildren(el("div", "empty", "当前没有运行中的 Docker 容器。"));
+    return;
+  }
+
+  const grouped = containers.reduce((acc, container) => {
+    const group = container.group || "Docker";
+    acc[group] ||= [];
+    acc[group].push(container);
+    return acc;
+  }, {});
+
+  const panels = [];
+  for (const [group, items] of Object.entries(grouped).sort()) {
+    const panel = el("section", "group");
+    const header = el("header", "group-header");
+    const title = el("div", "group-title");
+    title.append(el("h2", "", group));
+    title.append(el("span", "count", `${items.length} 容器`));
+    header.append(title);
+    panel.append(header);
+
+    const grid = el("div", "ports");
+    items.forEach((container) => {
+      const card = el("article", "port-card");
+      const head = el("div", "port-head");
+      const left = el("div");
+      left.append(el("div", "container-name", container.name));
+      left.append(el("div", "service", container.image));
+      head.append(left);
+      head.append(el("span", "badge ok", container.status?.startsWith("Up") ? "running" : container.status || "running"));
+      card.append(head);
+
+      const facts = el("div", "facts");
+      [
+        fact("状态", container.status || ""),
+        fact("Compose", container.dockerInfo?.composeProject ? `${container.dockerInfo.composeProject}/${container.dockerInfo.composeService || container.name}` : ""),
+        ...(container.portRecords || []).map((port) =>
+          fact(`${port.bind || ""} → ${port.mapping?.containerPort || ""}/${port.mapping?.protocol || "tcp"}`, `${port.port} → ${port.service || ""}`)
+        ),
+        fact("容器目录", container.dockerInfo?.workingDir),
+        fact("启动命令", container.dockerInfo ? `${container.dockerInfo.entrypoint || ""} ${container.dockerInfo.cmd || ""}`.trim() : ""),
+        fact("关联端口", container.purpose)
+      ].filter(Boolean).forEach((item) => facts.append(item));
+      card.append(facts);
+      grid.append(card);
+    });
+    panel.append(grid);
+    panels.push(panel);
+  }
+  content.replaceChildren(...panels);
 }
 
 function allModels(data) {
@@ -440,6 +536,7 @@ servicesTab.addEventListener("click", () => {
   servicesTab.classList.add("active");
   modelsTab.classList.remove("active");
   processesTab.classList.remove("active");
+  containersTab.classList.remove("active");
   render();
 });
 modelsTab.addEventListener("click", () => {
@@ -447,6 +544,7 @@ modelsTab.addEventListener("click", () => {
   modelsTab.classList.add("active");
   servicesTab.classList.remove("active");
   processesTab.classList.remove("active");
+  containersTab.classList.remove("active");
   render();
 });
 processesTab.addEventListener("click", () => {
@@ -454,6 +552,15 @@ processesTab.addEventListener("click", () => {
   processesTab.classList.add("active");
   servicesTab.classList.remove("active");
   modelsTab.classList.remove("active");
+  containersTab.classList.remove("active");
+  render();
+});
+containersTab.addEventListener("click", () => {
+  state.view = "containers";
+  containersTab.classList.add("active");
+  servicesTab.classList.remove("active");
+  modelsTab.classList.remove("active");
+  processesTab.classList.remove("active");
   render();
 });
 load();

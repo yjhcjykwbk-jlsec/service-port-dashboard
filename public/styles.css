@@ -246,6 +246,13 @@ button:hover {
   color: var(--ink);
 }
 
+.container-name {
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--green);
+  overflow-wrap: anywhere;
+}
+
 .service {
   margin-top: 4px;
   color: var(--muted);

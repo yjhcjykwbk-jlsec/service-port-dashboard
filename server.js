@@ -132,8 +132,8 @@ function parseDockerPorts(text = "") {
 
 function parseDocker(output) {
   return output.split("\n").filter(Boolean).map((line) => {
-    const [id, name, image, portsText = ""] = line.split("\t");
-    return { id, name, image, portsText, ports: parseDockerPorts(portsText) };
+    const [id, name, image, portsText = "", status = ""] = line.split("\t");
+    return { id, name, image, portsText, ports: parseDockerPorts(portsText), status };
   }).filter((item) => item.id && item.name);
 }
 
@@ -251,7 +251,7 @@ async function collectData() {
   const [ss, udp, docker, ps, psLong, systemd] = await Promise.all([
     run("ss", ["-ltnp"]),
     run("ss", ["-lunp"]),
-    run("docker", ["ps", "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}"]),
+    run("docker", ["ps", "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"]),
     run("ps", ["-eo", "pid,ppid,user,stat,args"]),
     run("ps", ["-eo", "pid,ppid,user,stat,etimes,args"]),
     run("systemctl", ["--user", "--no-pager", "--type=service", "--state=running"])
@@ -313,6 +313,26 @@ async function collectData() {
   }
 
   const longRunning = await collectLongRunning(longProcesses, records, containers);
+  const containerSummaries = containers.map((container) => {
+    const info = inspectByContainer.get(container.id) || {};
+    const portRecords = records.filter((record) => record.container?.id === container.id);
+    return {
+      ...container,
+      dockerInfo: info,
+      group: portRecords[0]?.group || inferContainerGroup(container, info),
+      purpose: portRecords.map((record) => `${record.port}/${record.protocol}: ${record.purpose}`).join("；"),
+      portRecords: portRecords.map((record) => ({
+        port: record.port,
+        protocol: record.protocol,
+        bind: record.bind,
+        service: record.service,
+        group: record.group,
+        purpose: record.purpose,
+        status: record.status,
+        mapping: record.dockerMapping
+      }))
+    };
+  }).sort((a, b) => (a.group || "").localeCompare(b.group || "") || a.name.localeCompare(b.name));
 
   return {
     generatedAt: new Date().toISOString(),
@@ -320,7 +340,7 @@ async function collectData() {
     groups,
     records: records.sort((a, b) => a.port - b.port),
     longRunning,
-    containers,
+    containers: containerSummaries,
     systemd: units,
     errors: [
       !docker.ok ? "docker ps failed or Docker is unavailable" : null,
@@ -389,6 +409,16 @@ function inferProcessService(process, detail, containerText) {
   if (/systemd|dbus|pipewire|pulseaudio|gvfs|xfce|evolution/i.test(text)) return "Desktop/system service";
   if (containerText && /docker|containerd/i.test(text)) return "Docker runtime";
   return "Unclassified";
+}
+
+function inferContainerGroup(container, info = {}) {
+  const text = [
+    container.name,
+    container.image,
+    info.composeProject,
+    info.composeService
+  ].filter(Boolean).join(" ");
+  return GROUP_RULES.find((rule) => rule.match.test(text))?.name || "Docker";
 }
 
 function redactKey(key = "") {
