@@ -268,6 +268,10 @@ function renderProcessNode(process, depth = 0) {
   const node = el("div", "process-node");
   node.style.setProperty("--depth", String(depth));
   const line = el("div", "process-line");
+  const hasChildren = process.children?.length > 0;
+  const toggle = el("span", "toggle " + (hasChildren ? "has-children" : "no-children"));
+  toggle.textContent = hasChildren ? "▼" : "";
+  line.append(toggle);
   line.append(el("span", "pid", String(process.pid)));
   line.append(el("span", "process-service", process.service));
   line.append(el("span", "process-age", formatDuration(process.elapsedSeconds)));
@@ -280,7 +284,16 @@ function renderProcessNode(process, depth = 0) {
     fact("启动参数", process.cmdline || process.command)
   ].filter(Boolean).forEach((item) => meta.append(item));
   node.append(meta);
-  process.children?.forEach((child) => node.append(renderProcessNode(child, depth + 1)));
+  const childrenWrap = el("div", "process-children");
+  process.children?.forEach((child) => childrenWrap.append(renderProcessNode(child, depth + 1)));
+  if (hasChildren) {
+    toggle.addEventListener("click", () => {
+      const collapsed = childrenWrap.style.display === "none";
+      childrenWrap.style.display = collapsed ? "" : "none";
+      toggle.textContent = collapsed ? "▼" : "▶";
+    });
+  }
+  node.append(childrenWrap);
   return node;
 }
 

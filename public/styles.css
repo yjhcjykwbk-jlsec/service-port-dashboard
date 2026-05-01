@@ -492,6 +492,23 @@ select {
   font-size: 12px;
 }
 
+.toggle {
+  width: 18px;
+  text-align: center;
+  cursor: default;
+  font-size: 10px;
+  user-select: none;
+}
+
+.toggle.has-children {
+  cursor: pointer;
+  color: var(--green);
+}
+
+.toggle.no-children {
+  color: transparent;
+}
+
 @media (max-width: 860px) {
   .topbar {
     align-items: stretch;
