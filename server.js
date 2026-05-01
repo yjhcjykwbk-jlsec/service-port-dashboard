@@ -4,6 +4,7 @@ import { copyFile, mkdir, readFile, readlink, writeFile } from "node:fs/promises
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import yaml from "js-yaml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.HOME || homedir();
@@ -15,6 +16,8 @@ const OPENCODE_AUTH = path.join(HOME, ".local/share/opencode/auth.json");
 const OPENCODE_MODEL_STATE = path.join(HOME, ".local/state/opencode/model.json");
 const CLAUDE_CONFIG = path.join(HOME, ".claude/settings.json");
 const OPENCODE_WEB_LOG = path.join(HOME, ".openclaw/workspace/opencode-web-5175.log");
+const DEER_FLOW_CONFIG = path.join(HOME, ".openclaw/workspace-ops/deer-flow/config.yaml");
+const DEER_FLOW_COMPOSE = path.join(HOME, ".openclaw/workspace-ops/deer-flow/docker/docker-compose-dev.yaml");
 const GROUP_RULES = [
   { id: "openclaw", name: "OpenClaw / Agents", match: /openclaw|opencode|claude-code|claude/i },
   { id: "multica", name: "Multica", match: /multica/i },
@@ -551,13 +554,30 @@ async function getModelData() {
     }))
   ];
 
+  // Read deer-flow config for model switching
+  let deerflowModels = [];
+  try {
+    const dfContent = await readFile(DEER_FLOW_CONFIG, "utf8");
+    const dfConfig = yaml.load(dfContent);
+    deerflowModels = (dfConfig?.models || []).map((model) => ({
+      id: model.name,
+      name: model.display_name || model.name,
+      model: model.model,
+      apiKey: model.api_key,
+      baseUrl: model.base_url,
+      supportsVision: Boolean(model.supports_vision),
+      supportsThinking: Boolean(model.supports_thinking)
+    }));
+  } catch { /* deer-flow config not available */ }
+
   return {
     configPaths: {
       openclaw: OPENCLAW_CONFIG,
       opencode: OPENCODE_CONFIG,
       opencodeAuth: OPENCODE_AUTH,
       opencodeState: OPENCODE_MODEL_STATE,
-      claude: CLAUDE_CONFIG
+      claude: CLAUDE_CONFIG,
+      deerflow: DEER_FLOW_CONFIG
     },
     warnings,
     providers: [...providerMap.values()],
@@ -595,6 +615,15 @@ async function getModelData() {
         allowedModels: null,
         switchable: true,
         note: agent.id === "defaults" ? "真实方式：写 ~/.openclaw/openclaw.json 的 agents.defaults.model.primary，然后重启 OpenClaw gateway。" : `真实方式：写 ~/.openclaw/openclaw.json 中 agent ${agent.id} 的 model.primary，然后重启 OpenClaw gateway。`
+      })),
+      ...deerflowModels.map((model) => ({
+        id: `deerflow:${model.id}`,
+        name: `DeerFlow / ${model.name}`,
+        currentModel: model.model ? `${model.baseUrl?.replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "unknown"}/${model.model}` : "",
+        allowedModels: null,
+        switchable: true,
+        note: `真实方式：写 deer-flow config.yaml 中 ${model.id} 的 api_key/base_url/model，然后重启 deer-flow 容器。当前：${model.baseUrl}`,
+        _deerflowTarget: model.id
       }))
     ]
   };
@@ -684,6 +713,60 @@ async function switchModel(target, model) {
     if (provider.apiKey) claude.env.ANTHROPIC_API_KEY = provider.apiKey;
     await writeJson(CLAUDE_CONFIG, claude);
     return { changed: "claude", applied: "settings-written; restart Claude Code processes to take effect", backups };
+  }
+
+  if (target.startsWith("deerflow:")) {
+    const modelName = target.slice("deerflow:".length);
+    if (!provider) throw new Error(`unknown provider ${providerID}`);
+
+    const dfContent = await readFile(DEER_FLOW_CONFIG, "utf8");
+    // Parse to find model entry, then do text-level replacement to preserve formatting
+    const dfConfig = yaml.load(dfContent);
+    const modelEntry = (dfConfig.models || []).find((m) => m.name === modelName);
+    if (!modelEntry) throw new Error(`model "${modelName}" not found in deer-flow config`);
+
+    const key = provider.apiKey || provider.key || "";
+    const baseUrl = providerBase(provider);
+    const selectedModel = providerModels(provider).find((m) => m.id === modelID);
+    const newModelId = (selectedModel?.id || modelID).toLowerCase();
+
+    // Find the model block start in the text and do targeted replacements
+    const lines = dfContent.split("\n");
+    let inTargetModel = false;
+    const newLines = lines.map((line) => {
+      // Detect model block boundaries by name
+      const nameMatch = line.match(/^\s*-\s+name:\s*(.+)$/);
+      if (nameMatch) {
+        inTargetModel = nameMatch[1].trim().replace(/^['"]|['"]$/g, "") === modelName;
+        return line; // keep name line unchanged
+      }
+
+      if (!inTargetModel) return line;
+
+      if (/^\s+model:\s/.test(line) && line.trim() !== "model:") {
+        return line.replace(/(\s+model:\s*).*$/, `$1${newModelId}`);
+      }
+      if (/^\s+api_key:\s/.test(line) && key) {
+        return line.replace(/(\s+api_key:\s*).*$/, `$1${key}`);
+      }
+      if (/^\s+base_url:\s/.test(line) && baseUrl) {
+        return line.replace(/(\s+base_url:\s*).*$/, `$1${baseUrl}`);
+      }
+      return line;
+    });
+
+    await addBackup(backups, DEER_FLOW_CONFIG);
+    await writeFile(DEER_FLOW_CONFIG, newLines.join("\n"), "utf8");
+
+    // Restart deer-flow containers (gateway + langgraph)
+    const restart = await run("docker", ["compose", "-f", DEER_FLOW_COMPOSE, "restart", "deer-flow-gateway", "deer-flow-langgraph"], 30000);
+    return {
+      changed: target,
+      applied: restart.ok
+        ? `deer-flow config.yaml updated for ${modelName}; containers restarted`
+        : `deer-flow config.yaml updated for ${modelName}; container restart failed: ${restart.stderr || restart.stdout}`,
+      backups
+    };
   }
 
   if (target.startsWith("openclaw:")) {
