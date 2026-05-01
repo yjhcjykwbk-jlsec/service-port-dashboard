@@ -3,7 +3,8 @@ const state = {
   models: null,
   activeGroup: "all",
   query: "",
-  view: "services"
+  view: "services",
+  collapsedPids: new Set()
 };
 
 const content = document.querySelector("#content");
@@ -270,7 +271,8 @@ function renderProcessNode(process, depth = 0) {
   const line = el("div", "process-line");
   const hasChildren = process.children?.length > 0;
   const toggle = el("span", "toggle " + (hasChildren ? "has-children" : "no-children"));
-  toggle.textContent = hasChildren ? "▼" : "";
+  const collapsed = state.collapsedPids.has(process.pid);
+  toggle.textContent = hasChildren ? (collapsed ? "▶" : "▼") : "";
   line.append(toggle);
   line.append(el("span", "pid", String(process.pid)));
   line.append(el("span", "process-service", process.service));
@@ -286,11 +288,14 @@ function renderProcessNode(process, depth = 0) {
   node.append(meta);
   const childrenWrap = el("div", "process-children");
   process.children?.forEach((child) => childrenWrap.append(renderProcessNode(child, depth + 1)));
+  if (collapsed) childrenWrap.style.display = "none";
   if (hasChildren) {
     toggle.addEventListener("click", () => {
-      const collapsed = childrenWrap.style.display === "none";
-      childrenWrap.style.display = collapsed ? "" : "none";
-      toggle.textContent = collapsed ? "▼" : "▶";
+      const nowCollapsed = childrenWrap.style.display === "none";
+      childrenWrap.style.display = nowCollapsed ? "" : "none";
+      toggle.textContent = nowCollapsed ? "▼" : "▶";
+      if (nowCollapsed) state.collapsedPids.delete(process.pid);
+      else state.collapsedPids.add(process.pid);
     });
   }
   node.append(childrenWrap);
@@ -577,4 +582,4 @@ containersTab.addEventListener("click", () => {
   render();
 });
 load();
-setInterval(load, 30000);
+setInterval(load, 300000);
