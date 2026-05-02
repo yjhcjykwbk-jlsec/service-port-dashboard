@@ -110,6 +110,11 @@ button:hover {
   filter: brightness(1.08);
 }
 
+button.secondary {
+  background: transparent;
+  color: var(--green);
+}
+
 .summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

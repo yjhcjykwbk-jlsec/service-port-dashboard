@@ -11,6 +11,7 @@ const content = document.querySelector("#content");
 const groupNav = document.querySelector("#groupNav");
 const search = document.querySelector("#search");
 const refresh = document.querySelector("#refresh");
+const exportMarkdown = document.querySelector("#exportMarkdown");
 const servicesTab = document.querySelector("#servicesTab");
 const modelsTab = document.querySelector("#modelsTab");
 const processesTab = document.querySelector("#processesTab");
@@ -103,6 +104,134 @@ function frontendUrl(record) {
   const scheme = record.status.scheme || "http";
   const host = window.location.hostname || "127.0.0.1";
   return `${scheme}://${host}:${record.port}/`;
+}
+
+function markdownEscape(value) {
+  return String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+
+function markdownTable(headers, rows) {
+  if (!rows.length) return "_无数据_";
+  return [
+    `| ${headers.map(markdownEscape).join(" |")} |`,
+    `| ${headers.map(() => "---").join(" |")} |`,
+    ...rows.map((row) => `| ${row.map(markdownEscape).join(" |")} |`)
+  ].join("\n");
+}
+
+function markdownHeader(title) {
+  const data = state.data;
+  return [
+    `# ${title}`,
+    "",
+    `- 生成时间：${data?.generatedAt ? new Date(data.generatedAt).toLocaleString("zh-CN", { hour12: false }) : new Date().toLocaleString("zh-CN", { hour12: false })}`,
+    `- 主机：${data?.host?.hostname || window.location.hostname || "unknown"}`,
+    `- 当前视图：${state.view}`,
+    ""
+  ].join("\n");
+}
+
+function servicesMarkdown() {
+  const records = (state.data?.records || []).filter(matches);
+  const rows = records.map((record) => [
+    `${record.port}/${record.protocol}`,
+    record.service,
+    record.group,
+    record.bind,
+    record.status?.label || "",
+    record.status?.frontend ? frontendUrl(record) : "",
+    record.process ? `${record.process.name} pid=${record.process.pid}` : "",
+    record.container ? `${record.container.name} (${record.container.image})` : "",
+    record.purpose
+  ]);
+  return `${markdownHeader("端口服务导出")}${markdownTable(["端口", "服务", "服务群", "绑定", "状态", "访问链接", "进程", "容器", "用途"], rows)}\n`;
+}
+
+function processRows(nodes, depth = 0) {
+  return nodes.flatMap((process) => [
+    [
+      `${"  ".repeat(depth)}${process.pid}`,
+      process.service,
+      formatDuration(process.elapsedSeconds),
+      (process.listeningPorts || []).join(", "),
+      `${process.ppid} / ${process.user} / ${process.stat}`,
+      process.cwd,
+      process.cmdline || process.command
+    ],
+    ...processRows(process.children || [], depth + 1)
+  ]);
+}
+
+function processesMarkdown() {
+  const rows = processRows(state.data?.longRunning || []);
+  return `${markdownHeader("长跑进程导出")}${markdownTable(["PID", "服务", "运行时间", "监听端口", "PPID/用户/状态", "cwd", "启动参数"], rows)}\n`;
+}
+
+function containersMarkdown() {
+  const containers = state.data?.containers || [];
+  const rows = containers.map((container) => [
+    container.name,
+    container.group || "Docker",
+    container.image,
+    container.status || "",
+    container.dockerInfo?.composeProject ? `${container.dockerInfo.composeProject}/${container.dockerInfo.composeService || container.name}` : "",
+    (container.ports || []).map((port) => `${port.hostPort}->${port.containerPort}/${port.protocol}`).join(", "),
+    container.dockerInfo?.workingDir || "",
+    container.dockerInfo ? `${container.dockerInfo.entrypoint || ""} ${container.dockerInfo.cmd || ""}`.trim() : "",
+    container.purpose || ""
+  ]);
+  return `${markdownHeader("Docker 容器导出")}${markdownTable(["容器", "服务群", "镜像", "状态", "Compose", "端口映射", "容器目录", "启动命令", "端口用途"], rows)}\n`;
+}
+
+function modelsMarkdown() {
+  const models = state.models;
+  if (!models) return `${markdownHeader("模型配置导出")}_模型配置尚未加载_\n`;
+  const providerRows = models.providers.map((provider) => [
+    provider.id,
+    provider.source || "openclaw",
+    provider.baseUrl || "",
+    provider.models.map((model) => model.id).join(", "),
+    provider.key?.configured ? provider.key.value : "未配置"
+  ]);
+  const targetRows = models.targets.map((target) => [
+    target.name,
+    target.id,
+    target.currentModel || "",
+    target.switchable ? "是" : "否",
+    target.note || ""
+  ]);
+  return [
+    markdownHeader("模型配置导出"),
+    "## 供应商",
+    "",
+    markdownTable(["ID", "来源", "Base URL", "模型", "API Key"], providerRows),
+    "",
+    "## 切换目标",
+    "",
+    markdownTable(["名称", "ID", "当前模型", "可切换", "说明"], targetRows),
+    ""
+  ].join("\n");
+}
+
+function exportCurrentMarkdown() {
+  if (!state.data) return;
+  const exporters = {
+    services: servicesMarkdown,
+    processes: processesMarkdown,
+    containers: containersMarkdown,
+    models: modelsMarkdown
+  };
+  const markdown = (exporters[state.view] || servicesMarkdown)();
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `service-port-dashboard-${state.view}-${stamp}.md`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  const url = link.href;
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function secretFact(label, value) {
@@ -549,6 +678,7 @@ search.addEventListener("input", () => {
 });
 
 refresh.addEventListener("click", load);
+exportMarkdown.addEventListener("click", exportCurrentMarkdown);
 servicesTab.addEventListener("click", () => {
   state.view = "services";
   servicesTab.classList.add("active");
