@@ -518,6 +518,7 @@ function claudeAnthropicBase(providerID, provider = {}) {
   const base = providerBase(provider);
   if (/deepseek/i.test(providerID) || /api\.deepseek\.com/i.test(base)) return "https://api.deepseek.com/anthropic";
   if (/^zai\b|z\.ai/i.test(providerID) || /api\.z\.ai/i.test(base)) return "https://api.z.ai/api/anthropic";
+  if (/minimax/i.test(providerID) || /api\.minimax\.io/i.test(base)) return "https://api.minimax.io/anthropic";
   return "";
 }
 
@@ -733,7 +734,7 @@ async function switchModel(target, model) {
     }
     await addBackup(backups, CLAUDE_CONFIG);
     claude.env ||= {};
-    claude.env.ANTHROPIC_MODEL = modelID.toLowerCase();
+    claude.env.ANTHROPIC_MODEL = modelID;
     claude.env.ANTHROPIC_BASE_URL = anthropicBase;
     if (provider.apiKey) claude.env.ANTHROPIC_API_KEY = provider.apiKey;
     await writeJson(CLAUDE_CONFIG, claude);
